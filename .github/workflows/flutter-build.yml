@@ -1,0 +1,320 @@
+name: Flutter APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_url:
+        description: 'Release URL untuk download ZIP'
+        required: true
+        type: string
+      tag:
+        description: 'Tag untuk release'
+        required: true
+        type: string
+      build_type:
+        description: 'Tipe Build (debug/release)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    name: Build Flutter APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter (Latest Stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip jq
+
+      - name: Download project ZIP via GitHub API
+        run: |
+          TAG="${{ inputs.tag }}"
+          REPO="${{ github.repository }}"
+          
+          echo "📦 Downloading project.zip for tag: ${TAG}"
+          echo "📍 Repository: ${REPO}"
+          
+          # Get release info using GitHub API
+          echo "🔍 Getting release info..."
+          RELEASE_INFO=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}")
+          
+          # Check if release exists
+          if [ -z "$RELEASE_INFO" ] || [ "$RELEASE_INFO" == "null" ]; then
+            echo "❌ Release with tag ${TAG} not found"
+            exit 1
+          fi
+          
+          # Try to find project.zip asset
+          echo "🔍 Searching for project.zip asset..."
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name=="project.zip") | .url')
+          
+          # If not found, try to find any .zip file
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "⚠️ project.zip not found, looking for any .zip file..."
+            DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | endswith(".zip")) | .url' | head -1)
+            
+            if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+              echo "❌ No ZIP asset found in release"
+              echo "📋 Available assets:"
+              echo "$RELEASE_INFO" | jq -r '.assets[].name' || echo "No assets"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Found asset URL: ${DOWNLOAD_URL}"
+          
+          # Download the asset
+          echo "⬇️ Downloading asset..."
+          curl -L \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -o project.zip \
+            "$DOWNLOAD_URL"
+          
+          # Verify download
+          if [ ! -f project.zip ]; then
+            echo "❌ project.zip not downloaded"
+            exit 1
+          fi
+          
+          FILE_SIZE=$(stat -c%s project.zip 2>/dev/null || stat -f%z project.zip 2>/dev/null || echo "0")
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "❌ Downloaded file is empty"
+            exit 1
+          fi
+          
+          echo "✅ Downloaded project.zip (${FILE_SIZE} bytes)"
+          
+          # Extract the ZIP
+          echo "📂 Extracting project.zip..."
+          unzip -q project.zip -d project
+          
+          if [ ! -d "project" ]; then
+            echo "❌ Failed to extract project.zip"
+            exit 1
+          fi
+          
+          echo "✅ Extraction successful"
+
+      - name: Check Flutter and Dart versions
+        run: |
+          echo "📋 Checking Flutter and Dart versions..."
+          flutter --version
+          dart --version
+
+      - name: Fix pubspec.yaml SDK version
+        run: |
+          cd project
+          
+          echo "📄 Checking pubspec.yaml..."
+          cat pubspec.yaml
+          
+          # Backup original
+          cp pubspec.yaml pubspec.yaml.bak
+          
+          # Fix SDK version - Ubah ^3.8.1 menjadi >=3.4.0 <4.0.0
+          echo "🔧 Fixing SDK version..."
+          
+          # Untuk pattern ^3.8.1
+          sed -i 's/sdk: \^3\.8\.[0-9]\+/sdk: ">=3.4.0 <4.0.0"/g' pubspec.yaml
+          sed -i "s/sdk: '\^3\.8\.[0-9]\+'/sdk: '>=3.4.0 <4.0.0'/g" pubspec.yaml
+          
+          # Untuk pattern >=3.8.1
+          sed -i 's/sdk: ">=3\.8\.[0-9]\+"/sdk: ">=3.4.0 <4.0.0"/g' pubspec.yaml
+          sed -i "s/sdk: '>=3\.8\.[0-9]\+'/sdk: '>=3.4.0 <4.0.0'/g" pubspec.yaml
+          
+          # Untuk pattern ^3.8.0
+          sed -i 's/sdk: \^3\.8\.[0-9]\+/sdk: ">=3.4.0 <4.0.0"/g' pubspec.yaml
+          sed -i "s/sdk: '\^3\.8\.[0-9]\+'/sdk: '>=3.4.0 <4.0.0'/g" pubspec.yaml
+          
+          echo "✅ pubspec.yaml updated"
+          echo "📄 New pubspec.yaml:"
+          cat pubspec.yaml
+
+      - name: Fix flutter_launcher_icons configuration
+        run: |
+          cd project
+          
+          # Cek jika ada flutter_launcher_icons di pubspec.yaml
+          if grep -q "flutter_launcher_icons:" pubspec.yaml; then
+            echo "🔧 Fixing flutter_launcher_icons configuration..."
+            
+            # Pastikan format YAML benar
+            sed -i '/flutter_launcher_icons:/,/^[^ ]/ {
+              s/android: true/android: true/
+              s/ios: true/ios: true/
+              s/image_path: "assets\/icon\/icon.jpg"/image_path: "assets\/icon\/icon.jpg"/
+              s/min_sdk_android: 21/min_sdk_android: 21/
+            }' pubspec.yaml
+          fi
+
+      - name: Fix YAML indentation issues
+        run: |
+          cd project
+          
+          echo "🔧 Fixing YAML formatting..."
+          
+          # Fix assets indentation
+          sed -i 's/^assets:/assets:/' pubspec.yaml
+          sed -i 's/^  - assets/  - assets/' pubspec.yaml
+          
+          # Fix fonts indentation
+          sed -i 's/^fonts:/fonts:/' pubspec.yaml
+          sed -i 's/^  - family/  - family/' pubspec.yaml
+          
+          echo "✅ YAML formatting fixed"
+
+      - name: Get dependencies
+        run: |
+          echo "📦 Installing Flutter dependencies..."
+          cd project
+          
+          # Try standard pub get
+          if flutter pub get; then
+            echo "✅ Dependencies installed successfully"
+          else
+            echo "⚠️ Standard pub get failed, trying with cleanup..."
+            
+            # Clean and try again
+            flutter clean
+            rm -rf pubspec.lock
+            rm -rf .dart_tool
+            
+            if flutter pub get; then
+              echo "✅ Dependencies installed after cleanup"
+            else
+              echo "❌ Both pub get attempts failed"
+              echo ""
+              echo "📋 Debug info:"
+              echo "--- pubspec.yaml ---"
+              cat pubspec.yaml
+              echo "-------------------"
+              exit 1
+            fi
+          fi
+
+      - name: Build APK
+        run: |
+          echo "🔨 Building Flutter APK (${{ inputs.build_type }})..."
+          cd project
+          
+          # Build with extra options
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            echo "Building debug APK..."
+            flutter build apk --debug || {
+              echo "⚠️ Debug build failed, trying with cleanup..."
+              flutter clean
+              flutter pub get
+              flutter build apk --debug || {
+                echo "❌ Debug build failed"
+                exit 1
+              }
+            }
+          else
+            echo "Building release APK..."
+            flutter build apk --release || {
+              echo "⚠️ Release build failed, trying with cleanup..."
+              flutter clean
+              flutter pub get
+              flutter build apk --release || {
+                echo "❌ Release build failed"
+                exit 1
+              }
+            }
+          fi
+          
+          echo "✅ Build completed"
+
+      - name: Verify APK
+        run: |
+          echo "🔍 Verifying APK..."
+          cd project
+          
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
+            APK_PATH="build/app/outputs/flutter-apk/app-debug.apk"
+          else
+            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+          fi
+          
+          if [ ! -f "$APK_PATH" ]; then
+            echo "❌ APK not found at: ${APK_PATH}"
+            echo "📂 Contents of build directory:"
+            find build -name "*.apk" 2>/dev/null || echo "No APK files found"
+            exit 1
+          fi
+          
+          APK_SIZE=$(stat -c%s "$APK_PATH" 2>/dev/null || stat -f%z "$APK_PATH" 2>/dev/null || echo "0")
+          APK_SIZE_MB=$((APK_SIZE / 1048576))
+          echo "✅ APK found: ${APK_PATH} (${APK_SIZE_MB} MB)"
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-apk-${{ inputs.build_type }}-${{ inputs.tag }}
+          path: project/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${{ inputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Type | ${{ inputs.build_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | ${{ github.repository }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run URL | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Build successful!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Build failed!" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.tag }}
+          path: |
+            project/pubspec.yaml
+            project/pubspec.yaml.bak
+            project/build/
+          retention-days: 3
