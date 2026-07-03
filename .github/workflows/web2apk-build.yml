@@ -1,0 +1,421 @@
+# web2apk-build.yml - Fixed (tanpa gradle wrapper download)
+name: Build Web to APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: 'URL Website (harus HTTPS)'
+        required: true
+        type: string
+        default: 'https://example.com'
+      app_name:
+        description: 'Nama Aplikasi'
+        required: true
+        type: string
+        default: 'MyWebApp'
+      app_package:
+        description: 'Package Name (com.example.app)'
+        required: false
+        type: string
+        default: 'com.mywebapp.app'
+      icon_url:
+        description: 'URL Icon (512x512 PNG)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: write
+  checks: write
+
+jobs:
+  build-web2apk:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools: 34.0.0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Create Android Project Structure
+        run: |
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          PACKAGE_NAME="${{ github.event.inputs.app_package }}"
+          WEB_URL="${{ github.event.inputs.web_url }}"
+          
+          # Create directories
+          mkdir -p android/app/src/main/java/${PACKAGE_NAME//.//}
+          mkdir -p android/app/src/main/res/layout
+          mkdir -p android/app/src/main/res/values
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          
+          echo "✅ Project structure created"
+
+      - name: Create AndroidManifest.xml
+        run: |
+          PACKAGE_NAME="${{ github.event.inputs.app_package }}"
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          
+          cat > android/app/src/main/AndroidManifest.xml << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${PACKAGE_NAME}">
+              
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="${APP_NAME}"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+                  android:usesCleartextTraffic="true">
+                  
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|keyboardHidden|screenSize"
+                      android:exported="true"
+                      android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Create MainActivity.java
+        run: |
+          PACKAGE_NAME="${{ github.event.inputs.app_package }}"
+          WEB_URL="${{ github.event.inputs.web_url }}"
+          PACKAGE_PATH="${PACKAGE_NAME//.//}"
+          
+          cat > android/app/src/main/java/${PACKAGE_PATH}/MainActivity.java << EOF
+          package ${PACKAGE_NAME};
+          
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.os.Build;
+          import android.view.KeyEvent;
+          import android.widget.ProgressBar;
+          import android.view.View;
+          import android.widget.FrameLayout;
+          import androidx.appcompat.app.AppCompatActivity;
+          
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+              private ProgressBar progressBar;
+              
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+                  
+                  webView = findViewById(R.id.webView);
+                  progressBar = findViewById(R.id.progressBar);
+                  
+                  WebSettings webSettings = webView.getSettings();
+                  webSettings.setJavaScriptEnabled(true);
+                  webSettings.setDomStorageEnabled(true);
+                  webSettings.setLoadWithOverviewMode(true);
+                  webSettings.setUseWideViewPort(true);
+                  webSettings.setBuiltInZoomControls(true);
+                  webSettings.setDisplayZoomControls(false);
+                  webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                  
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                      webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  }
+                  
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          String url = request.getUrl().toString();
+                          if (url.startsWith("http://") || url.startsWith("https://")) {
+                              view.loadUrl(url);
+                              return true;
+                          }
+                          return false;
+                      }
+                      
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          progressBar.setVisibility(View.GONE);
+                      }
+                  });
+                  
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onProgressChanged(WebView view, int newProgress) {
+                          if (newProgress < 100) {
+                              progressBar.setVisibility(View.VISIBLE);
+                              progressBar.setProgress(newProgress);
+                          } else {
+                              progressBar.setVisibility(View.GONE);
+                          }
+                      }
+                  });
+                  
+                  webView.loadUrl("${WEB_URL}");
+              }
+              
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                      if (keyCode == KeyEvent.KEYCODE_BACK) {
+                          if (webView.canGoBack()) {
+                              webView.goBack();
+                              return true;
+                          }
+                      }
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
+          }
+          EOF
+
+      - name: Create Layout
+        run: |
+          cat > android/app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              
+              <WebView
+                  android:id="@+id/webView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+              
+              <ProgressBar
+                  android:id="@+id/progressBar"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_gravity="center"
+                  android:visibility="gone" />
+          </FrameLayout>
+          EOF
+
+      - name: Create Styles
+        run: |
+          cat > android/app/src/main/res/values/styles.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.AppCompat.Light.NoActionBar" parent="Theme.AppCompat.Light">
+                  <item name="windowActionBar">false</item>
+                  <item name="windowNoTitle">true</item>
+                  <item name="android:windowBackground">@android:color/white</item>
+              </style>
+          </resources>
+          EOF
+
+      - name: Download Custom Icon
+        if: github.event.inputs.icon_url != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          
+          curl -L "${{ github.event.inputs.icon_url }}" -o icon.png
+          
+          convert icon.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert icon.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert icon.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          
+          cp android/app/src/main/res/mipmap-hdpi/ic_launcher.png android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          cp android/app/src/main/res/mipmap-mdpi/ic_launcher.png android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          cp android/app/src/main/res/mipmap-xhdpi/ic_launcher.png android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          cp android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
+      - name: Create Default Icons
+        if: github.event.inputs.icon_url == ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          
+          for size in 72 48 96 144 192; do
+            convert -size ${size}x${size} xc:#2196F3 \
+              -gravity center \
+              -font Helvetica -pointsize $((size/4)) \
+              -fill white -annotate 0 "$(echo "${{ github.event.inputs.app_name }}" | cut -c1-2)" \
+              android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+              
+            cp android/app/src/main/res/mipmap-hdpi/ic_launcher.png android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          done
+
+      - name: Create Gradle Files
+        run: |
+          PACKAGE_NAME="${{ github.event.inputs.app_package }}"
+          
+          # app/build.gradle
+          cat > android/app/build.gradle << EOF
+          plugins {
+              id 'com.android.application'
+          }
+          
+          android {
+              compileSdk 34
+              
+              defaultConfig {
+                  applicationId "${PACKAGE_NAME}"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              
+              buildTypes {
+                  release {
+                      minifyEnabled true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+              
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.webkit:webkit:1.9.0'
+          }
+          EOF
+          
+          # settings.gradle
+          cat > android/settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "${{ github.event.inputs.app_name }}"
+          include ':app'
+          EOF
+          
+          # build.gradle root
+          cat > android/build.gradle << 'EOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+          
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+          
+          # gradle.properties
+          cat > android/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+
+      - name: Setup Gradle Wrapper
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.4
+          chmod +x gradlew
+
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Verify and Upload APK
+        run: |
+          APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          
+          if [ -f "$APK_PATH" ]; then
+            echo "✅ APK built successfully!"
+            ls -la "$APK_PATH"
+            APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+            echo "📦 APK Size: $APK_SIZE"
+          else
+            echo "❌ APK not found!"
+            find android -name "*.apk" 2>/dev/null || echo "No APK files found"
+            exit 1
+          fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-APK
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 7
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: web2apk-${{ github.run_number }}
+          name: "📱 ${{ github.event.inputs.app_name }}"
+          body: |
+            ## 📱 ${{ github.event.inputs.app_name }}
+            
+            | Detail | Info |
+            |--------|------|
+            | **App Name** | ${{ github.event.inputs.app_name }} |
+            | **Website** | ${{ github.event.inputs.web_url }} |
+            | **Package** | ${{ github.event.inputs.app_package }} |
+            | **Build Date** | $(date) |
+            | **Run ID** | ${{ github.run_id }} |
+            
+            ### 📥 Download
+            [⬇️ Download APK](https://github.com/${{ github.repository }}/releases/download/web2apk-${{ github.run_number }}/app-release.apk)
+            
+            ---
+            *Built with GitHub Actions*
+          files: android/app/build/outputs/apk/release/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
